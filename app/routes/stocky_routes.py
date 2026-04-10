@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, File, Form, UploadFile
+from fastapi.responses import FileResponse
 
 from app.auth import CurrentUser
 from app.database import DbSession
@@ -200,6 +201,33 @@ def upload_item_photos(
 @items_router.delete("/{item_id}/photos/{photo_id}", responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
 def delete_item_photo(item_id: str, photo_id: str, db: DbSession, _: CurrentUser):
     return ok(StockyService(db).delete_item_photo(item_id, photo_id))
+
+
+@items_router.get(
+    "/{item_id}/photos/{photo_id}/view",
+    responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}},
+)
+def view_item_photo(item_id: str, photo_id: str, db: DbSession, _: CurrentUser):
+    photo = StockyService(db).get_item_photo_file(item_id, photo_id)
+    return FileResponse(
+        path=photo.file_path,
+        media_type=photo.mime_type,
+        filename=photo.file_name,
+    )
+
+
+@items_router.get(
+    "/{item_id}/photos/{photo_id}/download",
+    responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}},
+)
+def download_item_photo(item_id: str, photo_id: str, db: DbSession, _: CurrentUser):
+    photo = StockyService(db).get_item_photo_file(item_id, photo_id)
+    return FileResponse(
+        path=photo.file_path,
+        media_type=photo.mime_type,
+        filename=photo.file_name,
+        content_disposition_type="attachment",
+    )
 
 
 @items_router.post("/{item_id}/components", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})

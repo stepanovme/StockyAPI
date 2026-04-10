@@ -699,6 +699,40 @@ curl -X POST "http://localhost:8388/api/v1/items/<item_id>/photos" \
 
 Удаляет фото и запись в БД.
 
+### `GET /api/v1/items/{item_id}/photos/{photo_id}/view`
+
+Возвращает файл фотографии для отображения.
+
+Особенности:
+- требует авторизацию;
+- возвращает бинарный файл;
+- `Content-Type` берётся из `mime_type` фотографии;
+- подходит для предпросмотра изображения в приложении.
+
+Пример:
+
+```http
+GET /api/v1/items/{item_id}/photos/{photo_id}/view
+Authorization: Bearer <token>
+```
+
+### `GET /api/v1/items/{item_id}/photos/{photo_id}/download`
+
+Возвращает файл фотографии как скачиваемое вложение.
+
+Особенности:
+- требует авторизацию;
+- возвращает бинарный файл;
+- выставляет `Content-Disposition: attachment`;
+- подходит, если приложение хочет сохранить файл локально.
+
+Пример:
+
+```http
+GET /api/v1/items/{item_id}/photos/{photo_id}/download
+Authorization: Bearer <token>
+```
+
 ## 17. Передачи
 
 ### `GET /api/v1/transfers`

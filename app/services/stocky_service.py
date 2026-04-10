@@ -571,6 +571,15 @@ class StockyService:
             file_path.unlink()
         return {"id": photo_id, "deleted": True}
 
+    def get_item_photo_file(self, item_id: str, photo_id: str) -> ItemPhotoDB:
+        photo = self.db.get(ItemPhotoDB, photo_id)
+        if not photo or photo.item_id != item_id:
+            raise _not_found("Фотография не найдена")
+        file_path = Path(photo.file_path)
+        if not file_path.exists():
+            raise _not_found("Файл фотографии не найден на диске")
+        return photo
+
     def _create_component_record(self, item_id: str, payload: ItemComponentCreate) -> ItemComponentDB:
         linked_item_id = payload.linked_item_id
         if linked_item_id and not self.db.get(ItemDB, linked_item_id):
