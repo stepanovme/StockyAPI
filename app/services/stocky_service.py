@@ -374,7 +374,7 @@ class StockyService:
         return LocationRead.model_validate(location).model_dump()
 
     def _serialize_item_list(self, item: ItemDB) -> dict[str, Any]:
-        preview = item.photos[0].file_path if item.photos else None
+        preview_photo = item.photos[0] if item.photos else None
         return {
             **ItemListRead.model_validate(item).model_dump(),
             "responsible_user": self._serialize_user_brief(item.responsible_user),
@@ -384,7 +384,8 @@ class StockyService:
                 "name": item.location.name,
                 "description": item.location.description,
             },
-            "preview_photo": preview,
+            "preview_photo_id": preview_photo.id if preview_photo else None,
+            "preview_photo": preview_photo.file_path if preview_photo else None,
             "components_count": len(item.components),
         }
 
