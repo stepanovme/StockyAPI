@@ -82,6 +82,19 @@ def decode_access_token(token: str) -> dict[str, str]:
     return {"sub": str(sub), "exp": exp_value}
 
 
+def authenticate_token(token: str, db: Session) -> UserDB:
+    payload = decode_access_token(token)
+    user = (
+        db.query(UserDB)
+        .options(joinedload(UserDB.role))
+        .filter(UserDB.id == payload["sub"], UserDB.is_active.is_(True))
+        .first()
+    )
+    if not user:
+        raise _auth_error("Пользователь не найден или деактивирован")
+    return user
+
+
 def get_current_user(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_access_token: str | None = Header(default=None, alias="X-Access-Token"),
@@ -100,16 +113,7 @@ def get_current_user(
         if not normalized_token:
             raise _auth_error("Ожидается заголовок Authorization: Bearer <token>")
 
-    payload = decode_access_token(normalized_token)
-    user = (
-        db.query(UserDB)
-        .options(joinedload(UserDB.role))
-        .filter(UserDB.id == payload["sub"], UserDB.is_active.is_(True))
-        .first()
-    )
-    if not user:
-        raise _auth_error("Пользователь не найден или деактивирован")
-    return user
+    return authenticate_token(normalized_token, db)
 
 
 CurrentUser = Annotated[UserDB, Depends(get_current_user)]

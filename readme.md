@@ -1135,3 +1135,75 @@ Authorization: Bearer <token>
 
 Если товар вернули из аренды:
 - вызовите `POST /api/v1/rentals/{rental_id}/return`
+
+## 26. Realtime и уведомления
+
+### 26.1 WebSocket
+
+Для realtime обновлений доступен WebSocket:
+
+```text
+ws://localhost:8388/api/v1/ws?access_token=<token>
+```
+
+После подключения клиент будет получать JSON-события:
+- `item.created`
+- `item.updated`
+- `transfer.created`
+- `transfer.completed`
+- `transfer.rejected`
+- `writeoff.created`
+- `repair.created`
+- `repair.updated`
+- `rental.created`
+- `rental.updated`
+
+Формат сообщения:
+
+```json
+{
+  "type": "event",
+  "event_type": "transfer.created",
+  "created_at": "2026-04-13T12:00:00Z",
+  "payload": {}
+}
+```
+
+Клиент может отправлять `ping`, сервер ответит `pong`.
+
+### 26.2 Device token для push
+
+Для хранения iOS device token:
+
+`POST /api/v1/devices/tokens`
+
+Тело:
+
+```json
+{
+  "device_token": "apns-device-token",
+  "platform": "ios",
+  "device_name": "iPhone 15 Pro"
+}
+```
+
+### 26.3 Внутренние уведомления
+
+Сервер сохраняет уведомления в БД для персональных событий, например:
+- создан запрос на передачу
+- передача подтверждена
+- передача отклонена
+
+Ручки:
+- `GET /api/v1/notifications`
+- `POST /api/v1/notifications/{notification_id}/read`
+
+### 26.4 SQL-миграция для realtime и уведомлений
+
+Примените:
+
+[`migrations/2026_04_13_realtime_and_notifications.sql`](/Users/stepanovme/PycharmProjects/ApiStocky/migrations/2026_04_13_realtime_and_notifications.sql)
+
+Скрипт создаёт:
+- `device_tokens`
+- `notifications`

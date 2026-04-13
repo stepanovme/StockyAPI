@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -17,11 +18,13 @@ from app.auth import create_access_token, hash_password, verify_password
 from app.models.stocky import (
     ComponentTemplateDB,
     ComponentTemplateItemDB,
+    DeviceTokenDB,
     ItemComponentDB,
     ItemDB,
     ItemHistoryDB,
     ItemPhotoDB,
     LocationDB,
+    NotificationDB,
     RentalDB,
     RepairDB,
     RoleDB,
@@ -31,6 +34,8 @@ from app.models.stocky import (
 )
 from app.schemas import (
     AuthUserRead,
+    DeviceTokenCreate,
+    DeviceTokenRead,
     ItemComponentCreate,
     ItemComponentRead,
     ItemComponentUpdate,
@@ -44,6 +49,7 @@ from app.schemas import (
     LocationRead,
     LocationUpdate,
     LoginRequest,
+    NotificationRead,
     PaginatedResponse,
     RentalCreate,
     RentalRead,
@@ -68,6 +74,7 @@ from app.schemas import (
     WriteOffCreate,
     WriteOffRead,
 )
+from app.realtime import realtime_manager
 
 ITEM_STATUSES = {"active", "written_off"}
 TRANSFER_STATUSES = {"pending", "completed", "rejected"}
@@ -113,6 +120,66 @@ class StockyService:
         except IntegrityError as exc:
             self.db.rollback()
             raise _bad_request("Нарушено ограничение БД или уникальность данных") from exc
+
+    def _emit_realtime_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        user_ids: list[str] | None = None,
+    ) -> None:
+        message = {
+            "type": "event",
+            "event_type": event_type,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "payload": payload,
+        }
+        if user_ids:
+            for user_id in set(user_ids):
+                try:
+                    import asyncio
+
+                    asyncio.create_task(realtime_manager.send_to_user(user_id, message))
+                except RuntimeError:
+                    pass
+        else:
+            try:
+                import asyncio
+
+                asyncio.create_task(realtime_manager.broadcast(message))
+            except RuntimeError:
+                pass
+
+    def _create_notification(
+        self,
+        user_id: str,
+        event_type: str,
+        title: str,
+        body: str,
+        payload: dict[str, Any],
+    ) -> NotificationDB:
+        notification = NotificationDB(
+            user_id=user_id,
+            event_type=event_type,
+            title=title,
+            body=body,
+            payload_json=json.dumps(payload, ensure_ascii=False),
+            is_read=False,
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(notification)
+        self.db.flush()
+        self._commit()
+        self._emit_realtime_event(
+            event_type=event_type,
+            payload={
+                "notification_id": notification.id,
+                "title": title,
+                "body": body,
+                **payload,
+            },
+            user_ids=[user_id],
+        )
+        return notification
 
     def _get_role(self, role_id: int) -> RoleDB:
         role = self.db.get(RoleDB, role_id)
@@ -288,6 +355,51 @@ class StockyService:
 
     def current_user(self, user: UserDB) -> dict[str, Any]:
         return self._serialize_user(user)
+
+    def register_device_token(self, user: UserDB, payload: DeviceTokenCreate) -> dict[str, Any]:
+        existing = (
+            self.db.query(DeviceTokenDB)
+            .filter(DeviceTokenDB.device_token == payload.device_token.strip())
+            .first()
+        )
+        if existing:
+            existing.user_id = user.id
+            existing.platform = payload.platform.strip()
+            existing.device_name = payload.device_name.strip()
+            existing.is_active = True
+            existing.updated_at = datetime.utcnow()
+            self._commit()
+            return DeviceTokenRead.model_validate(existing).model_dump()
+
+        token = DeviceTokenDB(
+            user_id=user.id,
+            platform=payload.platform.strip(),
+            device_token=payload.device_token.strip(),
+            device_name=payload.device_name.strip(),
+            is_active=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        self.db.add(token)
+        self.db.flush()
+        self._commit()
+        return DeviceTokenRead.model_validate(token).model_dump()
+
+    def list_notifications(self, user: UserDB, unread_only: bool | None = None) -> list[dict[str, Any]]:
+        stmt = select(NotificationDB).where(NotificationDB.user_id == user.id).order_by(NotificationDB.created_at.desc())
+        if unread_only is True:
+            stmt = stmt.where(NotificationDB.is_read.is_(False))
+        notifications = self.db.scalars(stmt).all()
+        return [NotificationRead.model_validate(notification).model_dump() for notification in notifications]
+
+    def mark_notification_read(self, user: UserDB, notification_id: str) -> dict[str, Any]:
+        notification = self.db.get(NotificationDB, notification_id)
+        if not notification or notification.user_id != user.id:
+            raise _not_found("Уведомление не найдено")
+        notification.is_read = True
+        notification.read_at = datetime.utcnow()
+        self._commit()
+        return NotificationRead.model_validate(notification).model_dump()
 
     def list_roles(self) -> list[dict[str, Any]]:
         roles = self.db.scalars(select(RoleDB).order_by(RoleDB.id)).all()
@@ -544,6 +656,10 @@ class StockyService:
 
         self._add_history(item.id, "created", "Товар создан", payload.responsible_user_id)
         self._commit()
+        self._emit_realtime_event(
+            "item.created",
+            {"item_id": item.id, "name": item.name, "status": item.status, "operational_status": item.operational_status},
+        )
         return self.get_item(item.id)
 
     def get_item(self, item_id: str) -> dict[str, Any]:
@@ -578,6 +694,11 @@ class StockyService:
             self._add_history(item.id, action, f"Изменены поля: {', '.join(tracked_changes)}")
 
         self._commit()
+        if tracked_changes:
+            self._emit_realtime_event(
+                "item.updated",
+                {"item_id": item.id, "changed_fields": tracked_changes, "operational_status": item.operational_status},
+            )
         return self.get_item(item_id)
 
     def delete_item(self, item_id: str) -> dict[str, Any]:
@@ -768,6 +889,14 @@ class StockyService:
         self._add_history(item_id, action, description, actor_id)
         self._commit()
         self.db.refresh(transfer)
+        target_user_id = item.holder_user_id if payload.is_request else payload.to_user_id
+        self._create_notification(
+            user_id=target_user_id,
+            event_type="transfer.created",
+            title="Новая передача товара",
+            body=description,
+            payload={"transfer_id": transfer.id, "item_id": item_id, "is_request": payload.is_request},
+        )
         return TransferRead.model_validate(transfer).model_dump()
 
     def accept_transfer(self, transfer_id: str) -> dict[str, Any]:
@@ -782,6 +911,13 @@ class StockyService:
         transfer.completed_at = datetime.utcnow()
         self._add_history(item.id, "transferred", "Передача подтверждена", new_holder_id)
         self._commit()
+        self._create_notification(
+            user_id=transfer.from_user_id,
+            event_type="transfer.completed",
+            title="Передача подтверждена",
+            body="Передача товара подтверждена",
+            payload={"transfer_id": transfer.id, "item_id": transfer.item_id},
+        )
         return TransferRead.model_validate(transfer).model_dump()
 
     def reject_transfer(self, transfer_id: str) -> dict[str, Any]:
@@ -791,6 +927,13 @@ class StockyService:
         transfer.status = "rejected"
         transfer.completed_at = datetime.utcnow()
         self._commit()
+        self._create_notification(
+            user_id=transfer.from_user_id,
+            event_type="transfer.rejected",
+            title="Передача отклонена",
+            body="Запрос или передача товара были отклонены",
+            payload={"transfer_id": transfer.id, "item_id": transfer.item_id},
+        )
         return TransferRead.model_validate(transfer).model_dump()
 
     def list_write_offs(
@@ -852,6 +995,10 @@ class StockyService:
         self._add_history(item_id, history_action, history_description, person_id)
         self._commit()
         self.db.refresh(write_off)
+        self._emit_realtime_event(
+            "writeoff.created",
+            {"item_id": item_id, "write_off_id": write_off.id, "amount": str(write_off.amount), "reason": write_off.reason},
+        )
         return WriteOffRead.model_validate(write_off).model_dump()
 
     def list_repairs(
@@ -903,6 +1050,10 @@ class StockyService:
         self._add_history(item_id, "edited", "Товар отправлен в ремонт", actor.id)
         self._commit()
         self.db.refresh(repair)
+        self._emit_realtime_event(
+            "repair.created",
+            {"repair_id": repair.id, "item_id": item_id, "status": repair.status},
+        )
         return RepairRead.model_validate(repair).model_dump()
 
     def update_repair(self, repair_id: str, payload: RepairUpdate) -> dict[str, Any]:
@@ -926,6 +1077,10 @@ class StockyService:
         repair.updated_at = datetime.utcnow()
         self._add_history(item.id, "edited", f"Обновлен ремонт товара: {repair.status}")
         self._commit()
+        self._emit_realtime_event(
+            "repair.updated",
+            {"repair_id": repair.id, "item_id": item.id, "status": repair.status},
+        )
         return RepairRead.model_validate(repair).model_dump()
 
     def complete_repair(self, repair_id: str) -> dict[str, Any]:
@@ -987,6 +1142,10 @@ class StockyService:
         self._add_history(item_id, "edited", "Товар передан в аренду", actor.id)
         self._commit()
         self.db.refresh(rental)
+        self._emit_realtime_event(
+            "rental.created",
+            {"rental_id": rental.id, "item_id": item_id, "status": rental.status, "end_at": rental.end_at.isoformat()},
+        )
         return RentalRead.model_validate(rental).model_dump()
 
     def update_rental(self, rental_id: str, payload: RentalUpdate) -> dict[str, Any]:
@@ -1018,6 +1177,10 @@ class StockyService:
         rental.updated_at = datetime.utcnow()
         self._add_history(item.id, "edited", f"Обновлена аренда товара: {rental.status}")
         self._commit()
+        self._emit_realtime_event(
+            "rental.updated",
+            {"rental_id": rental.id, "item_id": item.id, "status": rental.status},
+        )
         return RentalRead.model_validate(rental).model_dump()
 
     def return_rental(self, rental_id: str) -> dict[str, Any]:

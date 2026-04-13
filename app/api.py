@@ -1,20 +1,27 @@
 from fastapi.exceptions import RequestValidationError
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+from app.auth import authenticate_token
+from app.database import SessionLocal
 from app.models import (  # noqa: F401
     ComponentTemplateDB,
     ComponentTemplateItemDB,
+    DeviceTokenDB,
     ItemComponentDB,
     ItemDB,
     ItemHistoryDB,
     ItemPhotoDB,
     LocationDB,
+    NotificationDB,
     RoleDB,
+    RentalDB,
+    RepairDB,
     TransferDB,
     UserDB,
     WriteOffDB,
 )
+from app.realtime import realtime_manager
 from app.routes import main_router
 
 app = FastAPI(
@@ -59,3 +66,39 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 
 
 app.include_router(main_router)
+
+
+@app.websocket("/api/v1/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    token = websocket.query_params.get("access_token") or websocket.headers.get("authorization")
+    if not token:
+        await websocket.close(code=4401, reason="Missing access token")
+        return
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    db = SessionLocal()
+    try:
+        user = authenticate_token(token, db)
+        await realtime_manager.connect(user.id, websocket)
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "user_id": user.id,
+                "message": "Realtime connection established",
+            }
+        )
+        while True:
+            message = await websocket.receive_text()
+            if message.lower() == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        await websocket.close(code=4401, reason="Unauthorized")
+    finally:
+        try:
+            if "user" in locals():
+                await realtime_manager.disconnect(user.id, websocket)
+        finally:
+            db.close()

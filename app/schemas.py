@@ -72,6 +72,35 @@ class TokenResponse(BaseModel):
     user: object
 
 
+class DeviceTokenCreate(BaseModel):
+    device_token: str = Field(min_length=10)
+    platform: str = "ios"
+    device_name: str = ""
+
+
+class DeviceTokenRead(OrmModel):
+    id: str
+    user_id: str
+    platform: str
+    device_token: str
+    device_name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class NotificationRead(OrmModel):
+    id: str
+    user_id: str
+    event_type: str
+    title: str
+    body: str
+    payload_json: str
+    is_read: bool
+    created_at: datetime
+    read_at: datetime | None
+
+
 class UserUpdate(BaseModel):
     name: str | None = None
     surname: str | None = None

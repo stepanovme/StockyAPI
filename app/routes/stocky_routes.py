@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from app.auth import CurrentUser
 from app.database import DbSession
 from app.schemas import (
+    DeviceTokenCreate,
     ErrorEnvelope,
     ItemComponentCreate,
     ItemComponentUpdate,
@@ -16,6 +17,7 @@ from app.schemas import (
     LocationCreate,
     LocationUpdate,
     LoginRequest,
+    NotificationRead,
     RentalCreate,
     RentalUpdate,
     RegisterRequest,
@@ -40,6 +42,8 @@ def ok(data: object) -> dict[str, object]:
 
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
+devices_router = APIRouter(prefix="/devices", tags=["Devices"])
+notifications_router = APIRouter(prefix="/notifications", tags=["Notifications"])
 roles_router = APIRouter(prefix="/roles", tags=["Roles"])
 users_router = APIRouter(prefix="/users", tags=["Users"])
 locations_router = APIRouter(prefix="/locations", tags=["Locations"])
@@ -64,6 +68,21 @@ def login(payload: LoginRequest, db: DbSession):
 @auth_router.get("/me", responses={401: {"model": ErrorEnvelope}})
 def me(db: DbSession, current_user: CurrentUser):
     return ok(StockyService(db).current_user(current_user))
+
+
+@devices_router.post("/tokens", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}})
+def register_device_token(payload: DeviceTokenCreate, db: DbSession, current_user: CurrentUser):
+    return ok(StockyService(db).register_device_token(current_user, payload))
+
+
+@notifications_router.get("", responses={401: {"model": ErrorEnvelope}})
+def list_notifications(db: DbSession, current_user: CurrentUser, unread_only: bool | None = None):
+    return ok(StockyService(db).list_notifications(current_user, unread_only))
+
+
+@notifications_router.post("/{notification_id}/read", responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def mark_notification_read(notification_id: str, db: DbSession, current_user: CurrentUser):
+    return ok(StockyService(db).mark_notification_read(current_user, notification_id))
 
 
 @roles_router.get("", responses={401: {"model": ErrorEnvelope}})
@@ -413,6 +432,8 @@ def delete_template(template_id: str, db: DbSession, _: CurrentUser):
 
 
 router.include_router(auth_router)
+router.include_router(devices_router)
+router.include_router(notifications_router)
 router.include_router(roles_router)
 router.include_router(users_router)
 router.include_router(locations_router)
