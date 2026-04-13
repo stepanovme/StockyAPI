@@ -11,8 +11,10 @@ class RealtimeManager:
     def __init__(self) -> None:
         self._connections: dict[str, set[WebSocket]] = defaultdict(set)
         self._lock = asyncio.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self, user_id: str, websocket: WebSocket) -> None:
+        self._loop = asyncio.get_running_loop()
         await websocket.accept()
         async with self._lock:
             self._connections[user_id].add(websocket)
@@ -41,6 +43,16 @@ class RealtimeManager:
         user_ids = list(self._connections.keys())
         for user_id in user_ids:
             await self.send_to_user(user_id, payload)
+
+    def dispatch_to_user(self, user_id: str, payload: dict[str, Any]) -> None:
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.send_to_user(user_id, payload), self._loop)
+
+    def dispatch_broadcast(self, payload: dict[str, Any]) -> None:
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.broadcast(payload), self._loop)
 
 
 realtime_manager = RealtimeManager()

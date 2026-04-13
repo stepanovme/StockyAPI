@@ -135,19 +135,9 @@ class StockyService:
         }
         if user_ids:
             for user_id in set(user_ids):
-                try:
-                    import asyncio
-
-                    asyncio.create_task(realtime_manager.send_to_user(user_id, message))
-                except RuntimeError:
-                    pass
+                realtime_manager.dispatch_to_user(user_id, message)
         else:
-            try:
-                import asyncio
-
-                asyncio.create_task(realtime_manager.broadcast(message))
-            except RuntimeError:
-                pass
+            realtime_manager.dispatch_broadcast(message)
 
     def _create_notification(
         self,
