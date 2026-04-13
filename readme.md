@@ -940,3 +940,198 @@ curl -X POST "http://localhost:8388/api/v1/items/<item_id>/write-offs" \
 - `app/models/stocky.py` — SQLAlchemy модели
 - `app/auth.py` — токены и текущий пользователь
 - `app/schemas.py` — Pydantic схемы запросов и ответов
+
+## 25. Расширение: Статусы, Ремонт, Аренда
+
+### 25.1 Новый столбец `items.operational_status`
+
+`status` по-прежнему отвечает за жизненный цикл товара:
+- `active`
+- `written_off`
+
+Новый `operational_status` отвечает за текущее рабочее состояние товара:
+- `available` — доступен
+- `broken` — сломан, но не списан
+- `under_repair` — находится в ремонте
+- `rented` — находится в аренде
+
+Это позволяет хранить, например:
+- товар `active`, но `broken`
+- товар `active`, но `under_repair`
+- товар `active`, но `rented`
+
+### 25.2 Новая таблица `repairs`
+
+Таблица хранит ремонты товаров:
+- `id`
+- `item_id`
+- `status`
+- `issue_description`
+- `service_provider`
+- `cost`
+- `started_at`
+- `expected_return_at`
+- `completed_at`
+- `notes`
+- `created_by_user_id`
+- `created_at`
+- `updated_at`
+
+Статусы ремонта:
+- `in_progress`
+- `completed`
+- `cancelled`
+
+### 25.3 Новая таблица `rentals`
+
+Таблица хранит аренды товаров:
+- `id`
+- `item_id`
+- `status`
+- `renter_name`
+- `renter_contact`
+- `start_at`
+- `end_at`
+- `returned_at`
+- `price_amount`
+- `price_period`
+- `currency`
+- `notes`
+- `created_by_user_id`
+- `created_at`
+- `updated_at`
+
+Статусы аренды:
+- `active`
+- `completed`
+- `overdue`
+- `cancelled`
+
+Периоды тарифа:
+- `hour`
+- `day`
+- `week`
+- `month`
+- `fixed`
+
+### 25.4 SQL-миграция
+
+Примените SQL-скрипт:
+
+[`migrations/2026_04_13_repairs_and_rentals.sql`](/Users/stepanovme/PycharmProjects/ApiStocky/migrations/2026_04_13_repairs_and_rentals.sql)
+
+Он добавляет:
+- `items.operational_status`
+- таблицу `repairs`
+- таблицу `rentals`
+
+### 25.5 Новые endpoint'ы
+
+#### Товары
+
+`POST /api/v1/items/{item_id}/repairs`
+- создать ремонт для товара
+
+`POST /api/v1/items/{item_id}/rentals`
+- создать аренду для товара
+
+`GET /api/v1/items`
+- теперь можно фильтровать ещё и по `operational_status`
+
+Пример:
+
+```http
+GET /api/v1/items?status=active&operational_status=under_repair
+Authorization: Bearer <token>
+```
+
+#### Ремонты
+
+`GET /api/v1/repairs`
+- список ремонтов
+- query params: `item_id`, `status`, `active_only`
+
+`GET /api/v1/repairs/{repair_id}`
+- получить один ремонт
+
+`PATCH /api/v1/repairs/{repair_id}`
+- обновить ремонт
+
+`POST /api/v1/repairs/{repair_id}/complete`
+- завершить ремонт
+
+Пример создания ремонта:
+
+```json
+{
+  "issue_description": "Не включается",
+  "service_provider": "Сервисный центр",
+  "cost": 3500,
+  "started_at": "2026-04-13T10:00:00Z",
+  "expected_return_at": "2026-04-20T18:00:00Z",
+  "notes": "Срочный ремонт"
+}
+```
+
+Логика:
+- при создании ремонта товар получает `operational_status = under_repair`
+- при завершении ремонта товар получает `operational_status = available`
+- при отмене ремонта товар получает `operational_status = broken`
+
+#### Аренды
+
+`GET /api/v1/rentals`
+- список аренд
+- query params: `item_id`, `status`, `active_only`
+
+`GET /api/v1/rentals/{rental_id}`
+- получить одну аренду
+
+`PATCH /api/v1/rentals/{rental_id}`
+- обновить аренду
+
+`POST /api/v1/rentals/{rental_id}/return`
+- завершить аренду и вернуть товар
+
+Пример создания аренды:
+
+```json
+{
+  "renter_name": "ООО Партнер",
+  "renter_contact": "+7 999 000-00-00",
+  "start_at": "2026-04-13T10:00:00Z",
+  "end_at": "2026-04-27T18:00:00Z",
+  "price_amount": 12000,
+  "price_period": "month",
+  "currency": "RUB",
+  "notes": "Аренда оборудования"
+}
+```
+
+Логика:
+- при создании аренды товар получает `operational_status = rented`
+- при возврате аренды товар получает `operational_status = available`, если у него нет активного ремонта
+
+### 25.6 Ограничения и валидация
+
+Сервер не позволит:
+- создать вторую активную аренду на один товар
+- создать второй активный ремонт на один товар
+- отправить в ремонт товар, который сейчас в аренде
+- сдать в аренду товар, который сломан или находится в ремонте
+- создать аренду с датой окончания раньше даты начала
+
+### 25.7 Практический сценарий
+
+Если товар просто сломан:
+- обновите товар через `PATCH /api/v1/items/{item_id}`
+- передайте `"operational_status": "broken"`
+
+Если товар отправили на ремонт:
+- вызовите `POST /api/v1/items/{item_id}/repairs`
+
+Если товар сдали в аренду:
+- вызовите `POST /api/v1/items/{item_id}/rentals`
+
+Если товар вернули из аренды:
+- вызовите `POST /api/v1/rentals/{rental_id}/return`

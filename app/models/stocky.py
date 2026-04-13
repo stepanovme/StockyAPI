@@ -106,6 +106,7 @@ class ItemDB(Base):
     location_id: Mapped[str] = mapped_column(ForeignKey("locations.id"), nullable=False)
     storage_box: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    operational_status: Mapped[str] = mapped_column(String(32), nullable=False, default="available")
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
     template_id: Mapped[str | None] = mapped_column(
         ForeignKey("component_templates.id", ondelete="SET NULL"),
@@ -240,3 +241,69 @@ class WriteOffDB(Base):
 
     item: Mapped[ItemDB] = relationship()
     person: Mapped[UserDB] = relationship()
+
+
+class RepairDB(Base):
+    __tablename__ = "repairs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_pk)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="in_progress")
+    issue_description: Mapped[str] = mapped_column(Text, nullable=False)
+    service_provider: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    expected_return_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=func.now(),
+    )
+
+    item: Mapped[ItemDB] = relationship()
+    created_by_user: Mapped[UserDB] = relationship(foreign_keys=[created_by_user_id])
+
+
+class RentalDB(Base):
+    __tablename__ = "rentals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_pk)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    renter_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    renter_contact: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    start_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    end_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    price_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    price_period: Mapped[str] = mapped_column(String(32), nullable=False, default="fixed")
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="RUB")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=func.now(),
+    )
+
+    item: Mapped[ItemDB] = relationship()
+    created_by_user: Mapped[UserDB] = relationship(foreign_keys=[created_by_user_id])

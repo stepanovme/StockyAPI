@@ -8,7 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 UnitType = Literal["шт", "м", "см", "кг", "г", "л", "мл", "компл.", "кор.", "рул.", "пар", "ед."]
 ItemStatus = Literal["active", "written_off"]
+OperationalStatus = Literal["available", "broken", "under_repair", "rented"]
 WriteOffReason = Literal["broken", "used", "lost", "expired", "other"]
+RepairStatus = Literal["in_progress", "completed", "cancelled"]
+RentalStatus = Literal["active", "completed", "overdue", "cancelled"]
+RentalPricePeriod = Literal["hour", "day", "week", "month", "fixed"]
 
 
 class OrmModel(BaseModel):
@@ -176,6 +180,7 @@ class ItemCreate(BaseModel):
     location_id: str
     storage_box: str = ""
     status: ItemStatus = "active"
+    operational_status: OperationalStatus = "available"
     notes: str = ""
     template_id: str | None = None
     components: list[ItemComponentCreate] = Field(default_factory=list)
@@ -192,6 +197,7 @@ class ItemUpdate(BaseModel):
     location_id: str | None = None
     storage_box: str | None = None
     status: ItemStatus | None = None
+    operational_status: OperationalStatus | None = None
     notes: str | None = None
     template_id: str | None = None
 
@@ -227,6 +233,7 @@ class ItemListRead(OrmModel):
     location_id: str
     storage_box: str
     status: str
+    operational_status: str
     notes: str
     template_id: str | None
     created_at: datetime
@@ -276,6 +283,84 @@ class WriteOffRead(OrmModel):
     notes: str
     person_id: str
     created_at: datetime
+
+
+class RepairCreate(BaseModel):
+    issue_description: str = Field(min_length=1)
+    service_provider: str = ""
+    cost: Decimal | None = Field(default=None, ge=0)
+    started_at: datetime | None = None
+    expected_return_at: datetime | None = None
+    notes: str = ""
+
+
+class RepairUpdate(BaseModel):
+    status: RepairStatus | None = None
+    issue_description: str | None = None
+    service_provider: str | None = None
+    cost: Decimal | None = Field(default=None, ge=0)
+    started_at: datetime | None = None
+    expected_return_at: datetime | None = None
+    completed_at: datetime | None = None
+    notes: str | None = None
+
+
+class RepairRead(OrmModel):
+    id: str
+    item_id: str
+    status: str
+    issue_description: str
+    service_provider: str
+    cost: Decimal | None
+    started_at: datetime
+    expected_return_at: datetime | None
+    completed_at: datetime | None
+    notes: str
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RentalCreate(BaseModel):
+    renter_name: str = Field(min_length=1)
+    renter_contact: str = ""
+    start_at: datetime
+    end_at: datetime
+    price_amount: Decimal = Field(gt=0)
+    price_period: RentalPricePeriod
+    currency: str = "RUB"
+    notes: str = ""
+
+
+class RentalUpdate(BaseModel):
+    status: RentalStatus | None = None
+    renter_name: str | None = None
+    renter_contact: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    returned_at: datetime | None = None
+    price_amount: Decimal | None = Field(default=None, gt=0)
+    price_period: RentalPricePeriod | None = None
+    currency: str | None = None
+    notes: str | None = None
+
+
+class RentalRead(OrmModel):
+    id: str
+    item_id: str
+    status: str
+    renter_name: str
+    renter_contact: str
+    start_at: datetime
+    end_at: datetime
+    returned_at: datetime | None
+    price_amount: Decimal
+    price_period: str
+    currency: str
+    notes: str
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class TemplateItemCreate(BaseModel):

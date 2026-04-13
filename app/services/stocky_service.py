@@ -22,6 +22,8 @@ from app.models.stocky import (
     ItemHistoryDB,
     ItemPhotoDB,
     LocationDB,
+    RentalDB,
+    RepairDB,
     RoleDB,
     TransferDB,
     UserDB,
@@ -43,7 +45,13 @@ from app.schemas import (
     LocationUpdate,
     LoginRequest,
     PaginatedResponse,
+    RentalCreate,
+    RentalRead,
+    RentalUpdate,
     RegisterRequest,
+    RepairCreate,
+    RepairRead,
+    RepairUpdate,
     RoleCreate,
     RoleRead,
     RoleUpdate,
@@ -64,6 +72,11 @@ from app.schemas import (
 ITEM_STATUSES = {"active", "written_off"}
 TRANSFER_STATUSES = {"pending", "completed", "rejected"}
 WRITE_OFF_REASONS = {"broken", "used", "lost", "expired", "other"}
+OPERATIONAL_STATUSES = {"available", "broken", "under_repair", "rented"}
+REPAIR_STATUSES = {"in_progress", "completed", "cancelled"}
+ACTIVE_REPAIR_STATUSES = {"in_progress"}
+RENTAL_STATUSES = {"active", "completed", "overdue", "cancelled"}
+ACTIVE_RENTAL_STATUSES = {"active", "overdue"}
 HISTORY_ACTIONS = {
     "created",
     "transferred",
@@ -145,6 +158,42 @@ class StockyService:
         if not transfer:
             raise _not_found("Передача не найдена")
         return transfer
+
+    def _get_repair(self, repair_id: str) -> RepairDB:
+        repair = self.db.get(RepairDB, repair_id)
+        if not repair:
+            raise _not_found("Ремонт не найден")
+        return repair
+
+    def _get_rental(self, rental_id: str) -> RentalDB:
+        rental = self.db.get(RentalDB, rental_id)
+        if not rental:
+            raise _not_found("Аренда не найдена")
+        return rental
+
+    def _has_active_repair(self, item_id: str, exclude_repair_id: str | None = None) -> bool:
+        stmt = self.db.query(RepairDB.id).filter(
+            RepairDB.item_id == item_id,
+            RepairDB.status.in_(ACTIVE_REPAIR_STATUSES),
+        )
+        if exclude_repair_id:
+            stmt = stmt.filter(RepairDB.id != exclude_repair_id)
+        return stmt.first() is not None
+
+    def _has_active_rental(self, item_id: str, exclude_rental_id: str | None = None) -> bool:
+        stmt = self.db.query(RentalDB.id).filter(
+            RentalDB.item_id == item_id,
+            RentalDB.status.in_(ACTIVE_RENTAL_STATUSES),
+        )
+        if exclude_rental_id:
+            stmt = stmt.filter(RentalDB.id != exclude_rental_id)
+        return stmt.first() is not None
+
+    def _set_item_operational_status(self, item: ItemDB, new_status: str) -> None:
+        if new_status not in OPERATIONAL_STATUSES:
+            raise _bad_request("Недопустимый operational_status")
+        item.operational_status = new_status
+        item.updated_at = datetime.utcnow()
 
     def _serialize_user(self, user: UserDB) -> dict[str, Any]:
         return AuthUserRead(
@@ -407,6 +456,7 @@ class StockyService:
     def list_items(
         self,
         status: str | None = None,
+        operational_status: str | None = None,
         search: str | None = None,
         category: str | None = None,
         responsible_user_id: str | None = None,
@@ -419,6 +469,8 @@ class StockyService:
     ) -> dict[str, Any]:
         if status and status not in ITEM_STATUSES:
             raise _bad_request("Недопустимый статус товара")
+        if operational_status and operational_status not in OPERATIONAL_STATUSES:
+            raise _bad_request("Недопустимый operational_status товара")
         sort_column = getattr(ItemDB, sort, None)
         if sort_column is None or sort not in {"name", "created_at", "updated_at"}:
             raise _bad_request("Недопустимое поле сортировки")
@@ -434,6 +486,8 @@ class StockyService:
         )
         if status:
             stmt = stmt.where(ItemDB.status == status)
+        if operational_status:
+            stmt = stmt.where(ItemDB.operational_status == operational_status)
         if search:
             like = f"%{search.strip()}%"
             stmt = stmt.where(or_(ItemDB.name.ilike(like), ItemDB.inventory_number.ilike(like)))
@@ -476,6 +530,7 @@ class StockyService:
             location_id=payload.location_id,
             storage_box=payload.storage_box.strip(),
             status=payload.status,
+            operational_status=payload.operational_status,
             notes=payload.notes.strip(),
             template_id=payload.template_id,
             created_at=datetime.utcnow(),
@@ -507,6 +562,9 @@ class StockyService:
             self._get_location(updates["location_id"])
         if "template_id" in updates and updates["template_id"] and not self.db.get(ComponentTemplateDB, updates["template_id"]):
             raise _not_found("Шаблон не найден")
+        if "operational_status" in updates and updates["operational_status"] is not None:
+            if updates["operational_status"] not in OPERATIONAL_STATUSES:
+                raise _bad_request("Недопустимый operational_status товара")
 
         for field, value in updates.items():
             if isinstance(value, str):
@@ -795,6 +853,178 @@ class StockyService:
         self._commit()
         self.db.refresh(write_off)
         return WriteOffRead.model_validate(write_off).model_dump()
+
+    def list_repairs(
+        self,
+        item_id: str | None = None,
+        status: str | None = None,
+        active_only: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        if status and status not in REPAIR_STATUSES:
+            raise _bad_request("Недопустимый статус ремонта")
+        stmt = select(RepairDB).order_by(RepairDB.started_at.desc(), RepairDB.created_at.desc())
+        if item_id:
+            stmt = stmt.where(RepairDB.item_id == item_id)
+        if status:
+            stmt = stmt.where(RepairDB.status == status)
+        if active_only is True:
+            stmt = stmt.where(RepairDB.status.in_(ACTIVE_REPAIR_STATUSES))
+        repairs = self.db.scalars(stmt).all()
+        return [RepairRead.model_validate(repair).model_dump() for repair in repairs]
+
+    def get_repair(self, repair_id: str) -> dict[str, Any]:
+        return RepairRead.model_validate(self._get_repair(repair_id)).model_dump()
+
+    def create_repair(self, item_id: str, payload: RepairCreate, actor: UserDB) -> dict[str, Any]:
+        item = self._get_item(item_id)
+        if item.status == "written_off":
+            raise _bad_request("Нельзя отправить в ремонт списанный товар")
+        if self._has_active_repair(item_id):
+            raise _bad_request("Для товара уже есть активный ремонт")
+        if self._has_active_rental(item_id):
+            raise _bad_request("Нельзя отправить в ремонт товар, который сейчас в аренде")
+
+        repair = RepairDB(
+            item_id=item_id,
+            status="in_progress",
+            issue_description=payload.issue_description.strip(),
+            service_provider=payload.service_provider.strip(),
+            cost=payload.cost,
+            started_at=payload.started_at or datetime.utcnow(),
+            expected_return_at=payload.expected_return_at,
+            notes=payload.notes.strip(),
+            created_by_user_id=actor.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        self.db.add(repair)
+        self._set_item_operational_status(item, "under_repair")
+        self.db.flush()
+        self._add_history(item_id, "edited", "Товар отправлен в ремонт", actor.id)
+        self._commit()
+        self.db.refresh(repair)
+        return RepairRead.model_validate(repair).model_dump()
+
+    def update_repair(self, repair_id: str, payload: RepairUpdate) -> dict[str, Any]:
+        repair = self._get_repair(repair_id)
+        item = self._get_item(repair.item_id)
+        updates = payload.model_dump(exclude_unset=True)
+        if "status" in updates and updates["status"] is not None and updates["status"] not in REPAIR_STATUSES:
+            raise _bad_request("Недопустимый статус ремонта")
+        for field, value in updates.items():
+            if isinstance(value, str):
+                value = value.strip()
+            setattr(repair, field, value)
+        if repair.status == "completed" and repair.completed_at is None:
+            repair.completed_at = datetime.utcnow()
+        if repair.status == "in_progress":
+            self._set_item_operational_status(item, "under_repair")
+        elif repair.status == "cancelled":
+            self._set_item_operational_status(item, "broken")
+        elif repair.status == "completed":
+            self._set_item_operational_status(item, "available")
+        repair.updated_at = datetime.utcnow()
+        self._add_history(item.id, "edited", f"Обновлен ремонт товара: {repair.status}")
+        self._commit()
+        return RepairRead.model_validate(repair).model_dump()
+
+    def complete_repair(self, repair_id: str) -> dict[str, Any]:
+        return self.update_repair(
+            repair_id,
+            RepairUpdate(status="completed", completed_at=datetime.utcnow()),
+        )
+
+    def list_rentals(
+        self,
+        item_id: str | None = None,
+        status: str | None = None,
+        active_only: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        if status and status not in RENTAL_STATUSES:
+            raise _bad_request("Недопустимый статус аренды")
+        stmt = select(RentalDB).order_by(RentalDB.start_at.desc(), RentalDB.created_at.desc())
+        if item_id:
+            stmt = stmt.where(RentalDB.item_id == item_id)
+        if status:
+            stmt = stmt.where(RentalDB.status == status)
+        if active_only is True:
+            stmt = stmt.where(RentalDB.status.in_(ACTIVE_RENTAL_STATUSES))
+        rentals = self.db.scalars(stmt).all()
+        return [RentalRead.model_validate(rental).model_dump() for rental in rentals]
+
+    def get_rental(self, rental_id: str) -> dict[str, Any]:
+        return RentalRead.model_validate(self._get_rental(rental_id)).model_dump()
+
+    def create_rental(self, item_id: str, payload: RentalCreate, actor: UserDB) -> dict[str, Any]:
+        item = self._get_item(item_id)
+        if item.status == "written_off":
+            raise _bad_request("Нельзя сдавать в аренду списанный товар")
+        if item.operational_status in {"broken", "under_repair"}:
+            raise _bad_request("Нельзя сдавать в аренду сломанный товар или товар в ремонте")
+        if self._has_active_rental(item_id):
+            raise _bad_request("Для товара уже есть активная аренда")
+        if payload.end_at <= payload.start_at:
+            raise _bad_request("Дата окончания аренды должна быть позже даты начала")
+
+        rental = RentalDB(
+            item_id=item_id,
+            status="active",
+            renter_name=payload.renter_name.strip(),
+            renter_contact=payload.renter_contact.strip(),
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+            price_amount=payload.price_amount,
+            price_period=payload.price_period,
+            currency=payload.currency.strip() or "RUB",
+            notes=payload.notes.strip(),
+            created_by_user_id=actor.id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        self.db.add(rental)
+        self._set_item_operational_status(item, "rented")
+        self.db.flush()
+        self._add_history(item_id, "edited", "Товар передан в аренду", actor.id)
+        self._commit()
+        self.db.refresh(rental)
+        return RentalRead.model_validate(rental).model_dump()
+
+    def update_rental(self, rental_id: str, payload: RentalUpdate) -> dict[str, Any]:
+        rental = self._get_rental(rental_id)
+        item = self._get_item(rental.item_id)
+        updates = payload.model_dump(exclude_unset=True)
+        if "status" in updates and updates["status"] is not None and updates["status"] not in RENTAL_STATUSES:
+            raise _bad_request("Недопустимый статус аренды")
+        if "end_at" in updates and updates["end_at"] is not None:
+            start_at = updates.get("start_at", rental.start_at)
+            if updates["end_at"] <= start_at:
+                raise _bad_request("Дата окончания аренды должна быть позже даты начала")
+        if "start_at" in updates and updates["start_at"] is not None:
+            end_at = updates.get("end_at", rental.end_at)
+            if end_at <= updates["start_at"]:
+                raise _bad_request("Дата окончания аренды должна быть позже даты начала")
+        for field, value in updates.items():
+            if isinstance(value, str):
+                value = value.strip()
+            setattr(rental, field, value)
+        if rental.status in {"completed", "cancelled"} and rental.returned_at is None:
+            rental.returned_at = datetime.utcnow()
+        if rental.status in ACTIVE_RENTAL_STATUSES:
+            self._set_item_operational_status(item, "rented")
+        elif self._has_active_repair(item.id):
+            self._set_item_operational_status(item, "under_repair")
+        else:
+            self._set_item_operational_status(item, "available")
+        rental.updated_at = datetime.utcnow()
+        self._add_history(item.id, "edited", f"Обновлена аренда товара: {rental.status}")
+        self._commit()
+        return RentalRead.model_validate(rental).model_dump()
+
+    def return_rental(self, rental_id: str) -> dict[str, Any]:
+        return self.update_rental(
+            rental_id,
+            RentalUpdate(status="completed", returned_at=datetime.utcnow()),
+        )
 
     def list_templates(self) -> list[dict[str, Any]]:
         templates = self.db.scalars(

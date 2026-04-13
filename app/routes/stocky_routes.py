@@ -16,7 +16,11 @@ from app.schemas import (
     LocationCreate,
     LocationUpdate,
     LoginRequest,
+    RentalCreate,
+    RentalUpdate,
     RegisterRequest,
+    RepairCreate,
+    RepairUpdate,
     RoleCreate,
     RoleUpdate,
     TemplateCreate,
@@ -43,6 +47,8 @@ items_router = APIRouter(prefix="/items", tags=["Items"])
 transfers_router = APIRouter(prefix="/transfers", tags=["Transfers"])
 write_offs_router = APIRouter(prefix="/write-offs", tags=["Write-offs"])
 templates_router = APIRouter(prefix="/templates", tags=["Templates"])
+repairs_router = APIRouter(prefix="/repairs", tags=["Repairs"])
+rentals_router = APIRouter(prefix="/rentals", tags=["Rentals"])
 
 
 @auth_router.post("/register", responses={400: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
@@ -141,6 +147,7 @@ def list_items(
     db: DbSession,
     _: CurrentUser,
     status: str | None = None,
+    operational_status: str | None = None,
     search: str | None = None,
     category: str | None = None,
     responsible_user_id: str | None = None,
@@ -154,6 +161,7 @@ def list_items(
     return ok(
         StockyService(db).list_items(
             status=status,
+            operational_status=operational_status,
             search=search,
             category=category,
             responsible_user_id=responsible_user_id,
@@ -269,6 +277,16 @@ def create_write_off(item_id: str, payload: WriteOffCreate, db: DbSession, curre
     return ok(StockyService(db).create_write_off(item_id, payload, current_user))
 
 
+@items_router.post("/{item_id}/repairs", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def create_repair(item_id: str, payload: RepairCreate, db: DbSession, current_user: CurrentUser):
+    return ok(StockyService(db).create_repair(item_id, payload, current_user))
+
+
+@items_router.post("/{item_id}/rentals", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def create_rental(item_id: str, payload: RentalCreate, db: DbSession, current_user: CurrentUser):
+    return ok(StockyService(db).create_rental(item_id, payload, current_user))
+
+
 @transfers_router.get("", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}})
 def list_transfers(
     db: DbSession,
@@ -317,6 +335,58 @@ def list_write_offs(
     return ok(StockyService(db).list_write_offs(item_id, person_id, reason, date_from, date_to))
 
 
+@repairs_router.get("", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}})
+def list_repairs(
+    db: DbSession,
+    _: CurrentUser,
+    item_id: str | None = None,
+    status: str | None = None,
+    active_only: bool | None = None,
+):
+    return ok(StockyService(db).list_repairs(item_id=item_id, status=status, active_only=active_only))
+
+
+@repairs_router.get("/{repair_id}", responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def get_repair(repair_id: str, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).get_repair(repair_id))
+
+
+@repairs_router.patch("/{repair_id}", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def update_repair(repair_id: str, payload: RepairUpdate, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).update_repair(repair_id, payload))
+
+
+@repairs_router.post("/{repair_id}/complete", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def complete_repair(repair_id: str, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).complete_repair(repair_id))
+
+
+@rentals_router.get("", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}})
+def list_rentals(
+    db: DbSession,
+    _: CurrentUser,
+    item_id: str | None = None,
+    status: str | None = None,
+    active_only: bool | None = None,
+):
+    return ok(StockyService(db).list_rentals(item_id=item_id, status=status, active_only=active_only))
+
+
+@rentals_router.get("/{rental_id}", responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def get_rental(rental_id: str, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).get_rental(rental_id))
+
+
+@rentals_router.patch("/{rental_id}", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def update_rental(rental_id: str, payload: RentalUpdate, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).update_rental(rental_id, payload))
+
+
+@rentals_router.post("/{rental_id}/return", responses={400: {"model": ErrorEnvelope}, 401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
+def return_rental(rental_id: str, db: DbSession, _: CurrentUser):
+    return ok(StockyService(db).return_rental(rental_id))
+
+
 @templates_router.get("", responses={401: {"model": ErrorEnvelope}, 404: {"model": ErrorEnvelope}})
 def list_templates(db: DbSession, _: CurrentUser):
     return ok(StockyService(db).list_templates())
@@ -349,4 +419,6 @@ router.include_router(locations_router)
 router.include_router(items_router)
 router.include_router(transfers_router)
 router.include_router(write_offs_router)
+router.include_router(repairs_router)
+router.include_router(rentals_router)
 router.include_router(templates_router)
