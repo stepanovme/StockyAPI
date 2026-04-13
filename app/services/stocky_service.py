@@ -458,6 +458,10 @@ class StockyService:
         self.db.add(user)
         self.db.flush()
         self._commit()
+        self._emit_realtime_event(
+            "user.created",
+            {"user_id": user.id, "role_id": user.role_id, "login": user.login},
+        )
         return self._serialize_user(self._get_user(user.id))
 
     def get_user(self, user_id: str) -> dict[str, Any]:
@@ -481,12 +485,20 @@ class StockyService:
                 value = value.strip()
             setattr(user, field, value)
         self._commit()
+        self._emit_realtime_event(
+            "user.updated",
+            {"user_id": user.id},
+        )
         return self._serialize_user(self._get_user(user.id))
 
     def delete_user(self, user_id: str) -> dict[str, Any]:
         user = self._get_user(user_id)
         user.is_active = False
         self._commit()
+        self._emit_realtime_event(
+            "user.deactivated",
+            {"user_id": user.id},
+        )
         return self._serialize_user(self._get_user(user.id))
 
     def _serialize_user_brief(self, user: UserDB) -> dict[str, Any]:
@@ -502,6 +514,10 @@ class StockyService:
         self.db.flush()
         self._commit()
         self.db.refresh(location)
+        self._emit_realtime_event(
+            "location.created",
+            {"location_id": location.id, "name": location.name},
+        )
         return LocationRead.model_validate(location).model_dump()
 
     def get_location(self, location_id: str) -> dict[str, Any]:
@@ -515,6 +531,10 @@ class StockyService:
             setattr(location, field, value)
         self._commit()
         self.db.refresh(location)
+        self._emit_realtime_event(
+            "location.updated",
+            {"location_id": location.id},
+        )
         return LocationRead.model_validate(location).model_dump()
 
     def delete_location(self, location_id: str) -> dict[str, Any]:
@@ -522,6 +542,10 @@ class StockyService:
         location.is_active = False
         self._commit()
         self.db.refresh(location)
+        self._emit_realtime_event(
+            "location.deactivated",
+            {"location_id": location.id},
+        )
         return LocationRead.model_validate(location).model_dump()
 
     def _serialize_item_list(self, item: ItemDB) -> dict[str, Any]:
@@ -650,6 +674,7 @@ class StockyService:
             "item.created",
             {"item_id": item.id, "name": item.name, "status": item.status, "operational_status": item.operational_status},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "item", "action": "created", "item_id": item.id})
         return self.get_item(item.id)
 
     def get_item(self, item_id: str) -> dict[str, Any]:
@@ -689,12 +714,18 @@ class StockyService:
                 "item.updated",
                 {"item_id": item.id, "changed_fields": tracked_changes, "operational_status": item.operational_status},
             )
+            self._emit_realtime_event("inventory.changed", {"entity": "item", "action": "updated", "item_id": item.id})
         return self.get_item(item_id)
 
     def delete_item(self, item_id: str) -> dict[str, Any]:
         item = self._get_item(item_id)
         self.db.delete(item)
         self._commit()
+        self._emit_realtime_event(
+            "item.deleted",
+            {"item_id": item_id},
+        )
+        self._emit_realtime_event("inventory.changed", {"entity": "item", "action": "deleted", "item_id": item_id})
         return {"id": item_id, "deleted": True}
 
     def upload_item_photos(
@@ -728,6 +759,10 @@ class StockyService:
             photos.append(photo)
 
         self._commit()
+        self._emit_realtime_event(
+            "item.photo_uploaded",
+            {"item_id": item_id, "photo_ids": [photo.id for photo in photos]},
+        )
         return [ItemPhotoRead.model_validate(photo).model_dump() for photo in photos]
 
     def delete_item_photo(self, item_id: str, photo_id: str) -> dict[str, Any]:
@@ -739,6 +774,10 @@ class StockyService:
         self._commit()
         if file_path.exists():
             file_path.unlink()
+        self._emit_realtime_event(
+            "item.photo_deleted",
+            {"item_id": item_id, "photo_id": photo_id},
+        )
         return {"id": photo_id, "deleted": True}
 
     def get_item_photo_file(self, item_id: str, photo_id: str) -> ItemPhotoDB:
@@ -775,6 +814,10 @@ class StockyService:
         self._add_history(item_id, "edited", f"Добавлена комплектующая: {component.name}")
         self._commit()
         self.db.refresh(component)
+        self._emit_realtime_event(
+            "item.component_created",
+            {"item_id": item_id, "component_id": component.id},
+        )
         return ItemComponentRead.model_validate(component).model_dump()
 
     def update_component(self, item_id: str, component_id: str, payload: ItemComponentUpdate) -> dict[str, Any]:
@@ -793,6 +836,10 @@ class StockyService:
         self._add_history(item_id, "edited", f"Обновлена комплектующая: {component.name}")
         self._commit()
         self.db.refresh(component)
+        self._emit_realtime_event(
+            "item.component_updated",
+            {"item_id": item_id, "component_id": component.id},
+        )
         return ItemComponentRead.model_validate(component).model_dump()
 
     def delete_component(self, item_id: str, component_id: str) -> dict[str, Any]:
@@ -802,6 +849,10 @@ class StockyService:
         self.db.delete(component)
         self._add_history(item_id, "edited", f"Удалена комплектующая: {component.name}")
         self._commit()
+        self._emit_realtime_event(
+            "item.component_deleted",
+            {"item_id": item_id, "component_id": component_id},
+        )
         return {"id": component_id, "deleted": True}
 
     def get_item_history(self, item_id: str) -> list[dict[str, Any]]:
@@ -879,6 +930,18 @@ class StockyService:
         self._add_history(item_id, action, description, actor_id)
         self._commit()
         self.db.refresh(transfer)
+        self._emit_realtime_event(
+            "transfer.created",
+            {
+                "transfer_id": transfer.id,
+                "item_id": item_id,
+                "from_user_id": transfer.from_user_id,
+                "to_user_id": transfer.to_user_id,
+                "status": transfer.status,
+                "is_request": transfer.is_request,
+            },
+        )
+        self._emit_realtime_event("inventory.changed", {"entity": "transfer", "action": "created", "transfer_id": transfer.id, "item_id": item_id})
         target_user_id = item.holder_user_id if payload.is_request else payload.to_user_id
         self._create_notification(
             user_id=target_user_id,
@@ -901,6 +964,17 @@ class StockyService:
         transfer.completed_at = datetime.utcnow()
         self._add_history(item.id, "transferred", "Передача подтверждена", new_holder_id)
         self._commit()
+        self._emit_realtime_event(
+            "transfer.completed",
+            {
+                "transfer_id": transfer.id,
+                "item_id": transfer.item_id,
+                "from_user_id": transfer.from_user_id,
+                "to_user_id": transfer.to_user_id,
+                "holder_user_id": new_holder_id,
+            },
+        )
+        self._emit_realtime_event("inventory.changed", {"entity": "transfer", "action": "completed", "transfer_id": transfer.id, "item_id": transfer.item_id})
         self._create_notification(
             user_id=transfer.from_user_id,
             event_type="transfer.completed",
@@ -917,6 +991,16 @@ class StockyService:
         transfer.status = "rejected"
         transfer.completed_at = datetime.utcnow()
         self._commit()
+        self._emit_realtime_event(
+            "transfer.rejected",
+            {
+                "transfer_id": transfer.id,
+                "item_id": transfer.item_id,
+                "from_user_id": transfer.from_user_id,
+                "to_user_id": transfer.to_user_id,
+            },
+        )
+        self._emit_realtime_event("inventory.changed", {"entity": "transfer", "action": "rejected", "transfer_id": transfer.id, "item_id": transfer.item_id})
         self._create_notification(
             user_id=transfer.from_user_id,
             event_type="transfer.rejected",
@@ -989,6 +1073,7 @@ class StockyService:
             "writeoff.created",
             {"item_id": item_id, "write_off_id": write_off.id, "amount": str(write_off.amount), "reason": write_off.reason},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "writeoff", "action": "created", "write_off_id": write_off.id, "item_id": item_id})
         return WriteOffRead.model_validate(write_off).model_dump()
 
     def list_repairs(
@@ -1044,6 +1129,7 @@ class StockyService:
             "repair.created",
             {"repair_id": repair.id, "item_id": item_id, "status": repair.status},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "repair", "action": "created", "repair_id": repair.id, "item_id": item_id})
         return RepairRead.model_validate(repair).model_dump()
 
     def update_repair(self, repair_id: str, payload: RepairUpdate) -> dict[str, Any]:
@@ -1071,6 +1157,7 @@ class StockyService:
             "repair.updated",
             {"repair_id": repair.id, "item_id": item.id, "status": repair.status},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "repair", "action": "updated", "repair_id": repair.id, "item_id": item.id})
         return RepairRead.model_validate(repair).model_dump()
 
     def complete_repair(self, repair_id: str) -> dict[str, Any]:
@@ -1136,6 +1223,7 @@ class StockyService:
             "rental.created",
             {"rental_id": rental.id, "item_id": item_id, "status": rental.status, "end_at": rental.end_at.isoformat()},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "rental", "action": "created", "rental_id": rental.id, "item_id": item_id})
         return RentalRead.model_validate(rental).model_dump()
 
     def update_rental(self, rental_id: str, payload: RentalUpdate) -> dict[str, Any]:
@@ -1171,6 +1259,7 @@ class StockyService:
             "rental.updated",
             {"rental_id": rental.id, "item_id": item.id, "status": rental.status},
         )
+        self._emit_realtime_event("inventory.changed", {"entity": "rental", "action": "updated", "rental_id": rental.id, "item_id": item.id})
         return RentalRead.model_validate(rental).model_dump()
 
     def return_rental(self, rental_id: str) -> dict[str, Any]:
@@ -1194,6 +1283,10 @@ class StockyService:
         self._replace_template_items(template, payload.items)
         self._commit()
         self.db.refresh(template)
+        self._emit_realtime_event(
+            "template.created",
+            {"template_id": template.id, "name": template.name},
+        )
         return self.get_template(template.id)
 
     def get_template(self, template_id: str) -> dict[str, Any]:
@@ -1234,6 +1327,10 @@ class StockyService:
         if payload.items is not None:
             self._replace_template_items(template, payload.items)
         self._commit()
+        self._emit_realtime_event(
+            "template.updated",
+            {"template_id": template.id, "name": template.name},
+        )
         return self.get_template(template_id)
 
     def delete_template(self, template_id: str) -> dict[str, Any]:
@@ -1244,4 +1341,8 @@ class StockyService:
             item.template_id = None
         self.db.delete(template)
         self._commit()
+        self._emit_realtime_event(
+            "template.deleted",
+            {"template_id": template_id},
+        )
         return {"id": template_id, "deleted": True}
